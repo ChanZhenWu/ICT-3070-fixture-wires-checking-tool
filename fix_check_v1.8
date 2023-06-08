@@ -1,0 +1,692 @@
+!!!!    4    0    1 1586414361   0000                                         
+!*****Author:NoonChen
+!*****Date:2016/6/1
+!** 1, This script can generate "fix_shorts" and "fix_pins" to check fixture
+!**    wiring.
+!** 2, This script maybe generate same node pairs because of fixture file has
+!**    same wire are wired to different probes, then need to skip the same node
+!**    pairs in "fix_shorts" and "fix_pins" file.
+!** 3, This script already skipped ground wiring such as 20219,20220,20239,20260
+!** 4, This script already skipped CONTROL card and ASRU card relative wiring.
+!** 5, This script can do selection whether you need check top side wiring.
+!** 6, added panel check function. 6/20
+!** 7, added fixture only check function. 2017/9/7
+!**    if you are using this script to check fixture only project, then need to
+!**    collect fixture folder and this script to a new folder then run.
+!** 8, added Node comment after BRC. 2017/9/18
+!** 9, added probe graphics function for fixture only project.
+!**    added node traslating to wirelist. 2018/1/7
+!**10, added MUX CARD verify function. 2018/1/11
+!**11, distinguishable PingPong fixture. 2018/1/13
+!**12, distinguishable which node name including "POWER" or "GROUND". 2019/3/27
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+option bit 32
+dim Node$(8000), Probe$(8000), Pins$(8000), WIRE$(30000), Array$[200]
+dim Shorts_L$(8000), Pins_L$(8000), Shorts_F$(8000), Pins_F$(8000)
+dim WL_L$(8000), WL_F$(8000)
+!off error
+!off break
+
+print using "@"
+print ""
+list object "fixture/fixture.o"over"fixture/fixture"
+!################# fixture only project part ###############################
+Comment$ = chr$(27)&"&v1S Is this a FIXTURE ONLY project or not ?? "
+question Comment$,FIX
+
+print ""
+Comment$ = chr$(27)&"&v3S Is this a PingPong project or not ?? "
+question Comment$,PingPong
+
+if FIX then
+call Fixture_Only          !# generate board,board_xy,config for fixture only
+end if
+
+!############### Panel/Single board check ###################################
+print ""
+Comment$ = chr$(27)&"&v7S Do you want to check top side's Probes ?? "
+question Comment$,TOP
+print chr$(27)&"&v3S script are running, please be waiting"
+
+assign @Fix_File to "fixture/fixture"
+assign @Data to "fixture/data";write,over
+
+loop
+ Array$ = ""
+ enter @Fix_File,,Err;Array$
+ if pos(Array$,"PANEL") then call Panel_Board    !# for panel fixture
+ exit if pos(Array$,"PANEL")
+ if pos(Array$,"BOARD") then call Singal_Board   !# for singal board
+ exit if pos(Array$,"BOARD")
+end loop
+
+assign @Fix_File to *
+assign @Data to *
+
+call Write_To_File        !# write fix_pins and fix_shorts files
+call Compile              !# compile source files and auto debug
+
+if FIX then
+call Mux_card_verify      !# added mux card verify function
+end if
+
+print chr$(27)&"&v2S Finished ^V^"
+print chr$(27)&"&v2S Now you can use ""fix_pins"" and ""fix_shorts"" to check fixture Wiring"
+stop
+
+!############## FOR SINGLE BOARD FIXTURE ####################################
+sub Singal_Board
+global TOP,I,P,W,T
+global NODE$(*),Probe$(*),Pins$(*),WIRE$(*)
+global Shorts_L$(*),Pins_L$(*),Shorts_F$(*),Pins_F$(*)
+
+I = 0
+P = 0
+W = 1
+T = 0
+
+assign @Fix_File to "fixture/fixture"
+assign @Data to "fixture/data";write,over
+assign @Short to "fix_shorts";write,over
+assign @Fix_Pin  to "fix_pins";write,over
+
+output @Short;"!!!!    9    0    1 1460733871   0000                                         "
+output @Short;"threshold 12"
+output @Short;"settling delay 1m"
+output @Fix_Pin;"!!!!   16    0    1 1460865776   0000                                         "
+
+loop
+ NEXT_NODE:
+ Array$ = ""
+ enter @Fix_File,,Err;Array$                   !@ READ NODES
+ exit if Err
+ exit if pos(Array$,"END BOARD")
+ if pos(Array$,"NODE") then
+  I = I+1
+  Node$(I) = Array$[pos(Array$,"Node")+10; len(Array$)]
+
+   if pos(Node$(I)," GROUND") then
+      Node$(I) = Node$(I)[pos(Node$(I),"Node")+1; len(Node$(I))-7]
+   end if
+   if pos(Node$(I)," POWER") then
+      Node$(I) = Node$(I)[pos(Node$(I),"Node")+1; len(Node$(I))-6]
+   end if
+
+!@print Node$(I)
+  output @Data; Node$(I) & " !" & val$(I)
+  loop
+    NEXT_PINS:
+    Array$ = ""
+    enter @Fix_File,,Err1;Array$       !@ READ PINS
+    exit if Err1
+    if trim$(Array$) = "" then goto NEXT_NODE
+    exit if pos(Array$,"PROBES")
+    exit if pos(Array$,"WIRES")
+
+    if pos(Array$,"PINS") then
+    loop                               !@ Collect PINS
+      Array$ = ""
+      enter @Fix_File,,Err2;Array$
+      exit if Err2
+      Pins$(P) = trim$(Array$)
+
+      if pos(Array$,"TOP")  > 0 and TOP = 0 then   !@ Choise TOP Probe
+      goto NEXT_NODE
+      else
+      end if
+
+      if pos(Array$,"WIRES") then
+         T = 0
+         W = W-1
+         loop
+         T = T+1
+         W = W+1
+         NEXT_WIRE:
+         Array$ = ""
+         enter @Fix_File,,Err3;Array$
+         exit if Err3
+         if trim$(Array$) = "" then goto NEXT_NODE
+         WIRE$(W) = ""
+         WIRE$(W) = trim$(Array$)
+
+         WIRE$(W) = WIRE$(W)[1;pos(WIRE$(W),"TO")-2]
+         if pos(WIRE$(W),"T") then goto NEXT_WIRE
+         if WIRE$(W) = WIRE$(W-1) then goto NEXT_WIRE
+         output @Data; WIRE$(W) & "  " & val$(W)
+
+         if WIRE$(W)[1;3] = "201" then goto NEXT_WIRE   ! Skip ASRU card
+         if WIRE$(W)[1;3] = "213" then goto NEXT_WIRE   ! Skip ASRU card
+         if WIRE$(W)[1;3] = "111" then goto NEXT_WIRE   ! Skip ASRU card
+         if WIRE$(W)[1;3] = "123" then goto NEXT_WIRE   ! Skip ASRU card
+         if WIRE$(W)[1;3] = "106" then goto NEXT_WIRE   ! Skip CTL  card
+         if WIRE$(W)[1;3] = "118" then goto NEXT_WIRE   ! Skip CTL  card
+         if WIRE$(W)[1;3] = "206" then goto NEXT_WIRE   ! Skip CTL  card
+         if WIRE$(W)[1;3] = "218" then goto NEXT_WIRE   ! Skip CTL  card
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "19" then goto NEXT_WIRE !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "20" then goto NEXT_WIRE !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "39" then goto NEXT_WIRE !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "40" then goto NEXT_WIRE !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "59" then goto NEXT_WIRE !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "60" then goto NEXT_WIRE !GND
+
+         !############### WRITE SOURCE FILE #################################
+         if T > 1 then
+      output @Short;"short " & WIRE$(W) & " to " & WIRE$(W-1) & " !" &NODE$(I)
+         end if
+      output @Fix_Pin;"nodes " & WIRE$(W) & " !" &NODE$(I)
+         !###################################################################
+
+         end loop
+      else
+      end if
+
+    end loop
+
+    end if
+  end loop
+
+ end if
+end loop
+
+assign @Fix_File to *
+assign @Data to *
+assign @Short to *
+assign @Fix_Pin  to *
+
+subend
+
+!############## FOR PANEL FIXTURE ###########################################
+sub Panel_Board
+global TOP,I,P,W,T
+global NODE$(*),Probe$(*),Pins$(*),WIRE$(*)
+global Shorts_L$(*),Pins_L$(*),Shorts_F$(*),Pins_F$(*)
+
+I = 0
+P = 0
+W = 1
+T = 0
+
+assign @Fix_File to "fixture/fixture"
+assign @Data to "fixture/data";write,over
+assign @Short to "fix_shorts";write,over
+assign @Fix_Pin  to "fix_pins";write,over
+
+output @Short;"!!!!    9    0    1 1460733871   0000                                         "
+output @Short;"threshold 12"
+output @Short;"settling delay 1m"
+output @Fix_Pin;"!!!!   16    0    1 1460865776   0000                                         "
+
+loop
+ NEXT_NODE1:
+ Array$ = ""
+ enter @Fix_File,,Err;Array$                   !@ READ NODES
+ exit if Err
+ exit if pos(Array$,"END PANEL")
+ if pos(Array$,"NODE") then
+  I = I+1
+  Node$(I) = Array$[pos(Array$,"Node")+12; len(Array$)]
+
+   if pos(Node$(I)," GROUND") then
+      Node$(I) = Node$(I)[pos(Node$(I),"Node")+1; len(Node$(I))-7]
+   end if
+   if pos(Node$(I)," POWER") then
+      Node$(I) = Node$(I)[pos(Node$(I),"Node")+1; len(Node$(I))-6]
+   end if
+
+  output @Data; Node$(I) & " !" & val$(I)
+  loop
+    NEXT_PINS1:
+    Array$ = ""
+    enter @Fix_File,,Err1;Array$       !@ READ PINS
+    Array$ = trim$(Array$)
+    exit if Err1
+    if trim$(Array$) = "" then goto NEXT_NODE1
+    exit if pos(Array$,"PROBES")
+
+    if pos(Array$,"PINS") then
+    loop                               !@ Collect PINS
+      Array$ = ""
+      enter @Fix_File,,Err2;Array$
+      exit if Err2
+      Pins$(P) = trim$(Array$)
+
+      if pos(Array$,"TOP")  > 0 and TOP = 0 then   !@ Choise TOP Probe
+      goto NEXT_NODE1
+      else
+      end if
+
+      if pos(Array$,"WIRES") then
+         T = 0
+         W = W-1
+         loop
+         T = T+1
+         W = W+1
+         NEXT_WIRE1:
+         Array$ = ""
+         enter @Fix_File,,Err3;Array$
+         exit if Err3
+         if trim$(Array$) = "" then goto NEXT_NODE1
+         WIRE$(W) = ""
+         WIRE$(W) = trim$(Array$)
+
+         WIRE$(W) = WIRE$(W)[1;pos(WIRE$(W),"TO")-2]
+         if pos(WIRE$(W),"T") then goto NEXT_WIRE1
+         if WIRE$(W) = WIRE$(W-1) then goto NEXT_WIRE1
+         output @Data; WIRE$(W) & "  " & val$(W)
+
+         if WIRE$(W)[1;3] = "201" then goto NEXT_WIRE1   ! Skip ASRU card
+         if WIRE$(W)[1;3] = "213" then goto NEXT_WIRE1   ! Skip ASRU card
+         if WIRE$(W)[1;3] = "111" then goto NEXT_WIRE1   ! Skip ASRU card
+         if WIRE$(W)[1;3] = "123" then goto NEXT_WIRE1   ! Skip ASRU card
+         if WIRE$(W)[1;3] = "106" then goto NEXT_WIRE1   ! Skip CTL  card
+         if WIRE$(W)[1;3] = "118" then goto NEXT_WIRE1   ! Skip CTL  card
+         if WIRE$(W)[1;3] = "206" then goto NEXT_WIRE1   ! Skip CTL  card
+         if WIRE$(W)[1;3] = "218" then goto NEXT_WIRE1   ! Skip CTL  card
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "19" then goto NEXT_WIRE1 !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "20" then goto NEXT_WIRE1 !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "39" then goto NEXT_WIRE1 !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "40" then goto NEXT_WIRE1 !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "59" then goto NEXT_WIRE1 !GND
+         if trim$(WIRE$(W)[len(WIRE$(W))-1;2]) = "60" then goto NEXT_WIRE1 !GND
+
+         !############### WRITE SOURCE FILE #################################
+         if T > 1 then
+      output @Short;"short " & WIRE$(W) & " to " & WIRE$(W-1) & " !" &NODE$(I)
+         end if
+      output @Fix_Pin;"nodes " & WIRE$(W) & " !" &NODE$(I)
+         !###################################################################
+
+         end loop
+      else
+      end if
+
+    end loop
+
+    end if
+  end loop
+
+ end if
+end loop
+
+assign @Fix_File to *
+assign @Data to *
+assign @Short to *
+assign @Fix_Pin  to *
+
+subend
+!############## WRITE SOURCE FILE ############################################
+
+sub Write_To_File
+global TOP,I,P,W,T
+global NODE$(*),Probe$(*),Pins$(*),WIRE$(*),FIX,PingPong
+global Shorts_L$(*),Pins_L$(*),Shorts_F$(*),Pins_F$(*),WL_L$(*),WL_F$(*)
+
+assign @Short to "fix_shorts";write,append
+assign @Fix_Pin  to "fix_pins";read
+
+output @Short;"threshold 1000"
+
+loop
+   enter  @Fix_Pin,,ErrPin;Array$
+   exit if ErrPin = 101007
+   output @Short;Array$
+end loop
+
+assign @Short to *
+assign @Fix_Pin  to *
+
+!#################fixture only and PingPong ###############################
+if FIX then
+  assign @WL to "wirelist";write, over
+  output @WL; "!!!!   10    0    1 1504779331   0000                                         "
+  output @WL;"test shorts ""fix_pins"" "
+  output @WL;"end test"
+  output @WL;"test shorts ""fix_shorts"" "
+  output @WL;"end test"
+  assign @WL to *
+  compile "wirelist"
+else
+  copy "wirelist"over"wirelist_bk"
+  copy "wirelist.o"over"wirelist_bk.o"
+end if
+
+!#################fixture only and not PingPong ###########################
+if FIX then
+  assign @WL to "wirelist";write, over
+  output @WL; "!!!!   10    0    1 1504779331   0000                                         "
+  output @WL;"test shorts ""fix_pins"" "
+!-----------------translating node ----------------------------------------
+  assign @Fix_Pin to "fix_pins";read
+    for C = 1 to W-1
+       Array$ = ""
+       enter @Fix_Pin,,Err7;Array$
+     !#print Array$
+     if not pos(Array$,"""") then
+       output @WL;"wire """ & Array$[pos(Array$,"!")+1;len(Array$)] & """ to " & Array$[7;pos(Array$,"!")-8] & " g"
+     else
+       output @WL;"wire " & Array$[pos(Array$,"!")+1;len(Array$)] & " to " & Array$[7;pos(Array$,"!")-8] & " g"
+     end if
+    next C
+  assign @Fix_Pin to *
+!--------------------------------------------------------------------------
+  output @WL;"end test"
+  output @WL;""
+  output @WL;"test shorts ""fix_shorts"" "
+!-----------------translating node ----------------------------------------
+  assign @Fix_Pin to "fix_pins";read
+    for C = 1 to W-1
+       Array$ = ""
+       enter @Fix_Pin,,Err7;Array$
+     !#print Array$
+     if not pos(Array$,"""") then
+       output @WL;"wire """ & Array$[pos(Array$,"!")+1;len(Array$)] & """ to " & Array$[7;pos(Array$,"!")-8] & " g"
+     else
+       output @WL;"wire " & Array$[pos(Array$,"!")+1;len(Array$)] & " to " & Array$[7;pos(Array$,"!")-8] & " g"
+     end if
+    next C
+  assign @Fix_Pin to *
+!--------------------------------------------------------------------------
+  output @WL;"end test"
+  assign @WL to *
+  compile "wirelist",Err8;list
+
+!--------------------------------------------------------------------------
+assign @WL to "wirelist";read
+  W = 1
+  loop
+  enter @WL,,ErrW;WL_F$(W)
+  exit if ErrW = 101007
+  W = W+1
+  end loop
+assign @WL to *
+!--------------- auto debug wirelist --------------------------------------
+if Err8 then
+ assign @Wire_L to "wirelist.l";read
+   L = 1
+   loop
+   WL_L$(L) = ""
+   Line$ = ""
+   Line_L$ = ""
+   enter @Wire_L,,Err5;WL_L$(L)
+   exit if pos(WL_L$(L),"NO OBJECT PRODUCED")
+   exit if Err5 = 101007
+   if pos(WL_L$(L),"ERROR   Wire previously encountered.") then
+   Line$ = WL_L$(L-2)
+   if trim$(Line$) = "" or Line$[1;5] = "-----" then
+     Line$ = WL_L$(L-8)
+   end if
+   Line_N$ = Line$[1;(pos(Line$,":"))/2]
+   Line_Num = val(trim$(Line_N$))
+   WL_F$(Line_Num) = "!@" & WL_F$(Line_Num)
+   end if
+   L = L+1
+   end loop
+ assign @Wire_L to *
+  end if
+else
+  if not PingPong then
+  copy "wirelist"over"wirelist_bk"
+  copy "wirelist.o"over"wirelist_bk.o"
+  end if
+end if
+
+!-------------- re-write wirelist -----------------------------------------
+if FIX and not PingPong then
+ assign @WL to "wirelist";write,over
+ output @WL; "!!!!   10    0    1 1504779331   0000                                         "
+ for W = 1 to W
+   output @WL;WL_F$(W)
+ next W
+ assign @WL to *
+ compile "wirelist"
+end if
+
+EXIST = 0
+assign @WL,Err11 to "wirelist";read
+
+  if Err11 = 100009 then
+    assign @WL to "wirelist";write,append
+    output @WL; "!!!!   10    0    1 1504779331   0000                                         "
+!@  output @WL;"test shorts ""fix_pins"" "
+!@  output @WL;"end test"
+!@  output @WL;"test shorts ""fix_shorts"" "
+!@  output @WL;"end test"
+    assign @WL to *
+    compile "wirelist"
+    assign @WL to *
+    assign @WL,Err11 to "wirelist";read
+  end if
+
+   loop
+   Array$ = ""
+   enter @WL,,ErrWL;Array$
+   exit if ErrWL = 101007
+   if pos(Array$,"fix_pins") then EXIST = 1
+   end loop
+assign @WL to *
+
+if not FIX and not EXIST then
+   assign @WL to "wirelist";write,append
+     output @WL;"test shorts ""fix_pins"" "
+     output @WL;"end test"
+     output @WL;"test shorts ""fix_shorts"" "
+     output @WL;"end test"
+   assign @WL to *
+   compile "wirelist"
+end if
+
+subend
+!############## COMPILING AND FIX ERRORs #####################################
+
+sub Compile
+global Node$(*),Probe$(*),Pins$(*),WIRE$(*)
+global Shorts_L$(*),Pins_L$(*),Shorts_F$(*),Pins_F$(*)
+
+assign @Fix_Pin to "fix_pins";read
+  P = 1
+  loop
+  enter @Fix_Pin,,ErrP;Pins_F$(P)
+  exit if Errp = 101007
+  P = P+1
+  end loop
+assign @Fix_Pin to *
+
+assign @Short to "fix_shorts";read
+  S = 1
+  loop
+  enter @Short,,ErrS; Shorts_F$(S)
+  exit if ErrS = 101007
+  S = S+1
+  end loop
+assign @Short to *
+
+compile"fix_pins",Problem;list      !# fix FIX_PINS ERROR
+   if Problem then
+assign @Fix_Pins_L to "fix_pins.l";read
+   L = 1
+   loop
+   Pins_L$(L) = ""
+   Line$ = ""
+   Line_L$ = ""
+   enter @Fix_Pins_L,,Err5;Pins_L$(L)
+   exit if pos(Pins_L$(L),"ERROR MESSAGES:")
+   if pos(Pins_L$(L),"The node was specified more than once") then
+   Line$ = Pins_L$(L-1)
+   Line_N$ = Line$[1;(pos(Line$,":"))/2]
+   Line_Num = val(trim$(Line_N$))
+   Pins_F$(Line_Num) = "!@" & Pins_F$(Line_Num)
+  end if
+   L = L+1
+   end loop
+assign @Fix_Pins_L to *
+end if
+
+ assign @Fix_Pin to "fix_pins";write,over
+ output @Fix_Pin;"!!!!   16    0    1 1460865776   0000                                         "
+ for R = 1 to P
+   output @Fix_Pin;Pins_F$(R)
+ next R
+ assign @Fix_Pin to *
+
+compile"fix_pins",P
+if P then compile"fix_pins";version""
+
+  compile"fix_shorts",Problem;list   !# fix FIX_SHORTS ERROR
+  if Problem then
+  assign @Fix_Shorts_L to "fix_shorts.l";read
+   L = 1
+   loop
+   Shorts_L$(L) = ""
+   Line$ = ""
+   Line_L$ = ""
+   enter @Fix_Shorts_L,,Err5;Shorts_L$(L)
+   exit if pos(Shorts_L$(L),"ERROR MESSAGES:")
+  if pos(Shorts_L$(L),"ERROR SHC1") then
+   Line$ = Shorts_L$(L-1)
+   Line_N$ = Line$[1;(pos(Line$,":"))/2]
+   Line_Num = val(trim$(Line_N$))
+   Shorts_F$(Line_Num) = "!@" & Shorts_F$(Line_Num)
+  end if
+   L = L+1
+   end loop
+  assign @Fix_Shorts_L to *
+  end if
+
+ assign @SHORT to "fix_shorts";write,over
+ output @Short;"!!!!    9    0    1 1460733871   0000                                         "
+ for W = 1 to S
+   output @SHORT;Shorts_F$(W)
+ next W
+ assign @SHORT to *
+
+compile"fix_shorts",P
+if P then compile"fix_shorts";version""
+
+subend
+
+sub Fixture_Only
+!#Generate the demo config file for full bank
+  assign @CONFIG_file to "config";over
+  output @CONFIG_file;"!!!!    5    0    2 1493432712  Vc903                                         "
+  output @CONFIG_file;"target hp3073 standard"
+  output @CONFIG_file;"enable common delimiter"
+  output @CONFIG_file;"enable express fixturing"
+  output @CONFIG_file;"enable software revision b"
+
+  output @CONFIG_file;"module 0"
+  output @CONFIG_file;"cards 1 asru c revision"
+  output @CONFIG_file;"cards 2 to 5 hybrid standard double density"
+  output @CONFIG_file;"cards 6 control xt"
+  output @CONFIG_file;"cards 7 to 11 hybrid standard double density"
+  output @CONFIG_file;"end module"
+
+  output @CONFIG_file;"module 1"
+  output @CONFIG_file;"cards 1 asru c revision"
+  output @CONFIG_file;"cards 2 to 5 hybrid standard double density"
+  output @CONFIG_file;"cards 6 control xt"
+  output @CONFIG_file;"cards 7 to 11 hybrid standard double density"
+  output @CONFIG_file;"end module"
+
+  output @CONFIG_file;"module 2"
+  output @CONFIG_file;"cards 1 asru c revision"
+  output @CONFIG_file;"cards 2 to 5 hybrid standard double density"
+  output @CONFIG_file;"cards 6 control xt"
+  output @CONFIG_file;"cards 7 to 11 hybrid standard double density"
+  output @CONFIG_file;"end module"
+
+  output @CONFIG_file;"module 3"
+  output @CONFIG_file;"cards 1 asru c revision"
+  output @CONFIG_file;"cards 2 to 5 hybrid standard double density"
+  output @CONFIG_file;"cards 6 control xt"
+  output @CONFIG_file;"cards 7 to 11 hybrid standard double density"
+  output @CONFIG_file;"end module"
+
+  assign @CONFIG_file to *
+  compile "config"
+  unlink"config~",Ignore_error
+
+!#Generate the demo board file
+  assign @BOARD_file to "board";over
+  output @BOARD_file;"HEADING"
+  assign @BOARD_file to *
+  check board "board"
+  compile "board"
+  unlink"board~",Ignore_error
+
+!# Gerarate the demo board_xy file
+   assign @Board_xy to "board_xy";over
+   output @Board_xy;"!!!!   15    1    1 1469081253   0000                                         "
+   output @Board_xy;"  UNITS  MILS;"
+   output @Board_xy;"  SCALE  0.1;"
+
+   assign @Fixture to "fixture/fixture";read
+      loop
+      Array$ = ""
+      enter @Fixture,,Err6;Array$
+      if pos(Array$," PLACEMENT ") then
+         output @Board_xy; Array$
+
+      loop
+        Array$ = ""
+        enter @Fixture,,Err6;Array$
+        output @Board_xy; Array$
+        if pos(Array$,";") then goto END
+        end loop
+      end if
+      end loop
+   END:
+   assign @Fixture to *
+   assign @Board_xy to *
+   compile "board_xy"
+subend
+
+sub Mux_card_verify
+global Shorts_L$(*),Pins_L$(*),Shorts_F$(*),Pins_F$(*),WL_L$(*),WL_F$(*)
+
+Timing = 0
+assign @Mux,Err10 to "fixture/testjet_mux";read
+ if Err10 = 100009 then subexit
+ assign @WL to "wirelist"; append
+   output @WL;"test testjet ""testjet"""
+   loop
+   Array$ = ""
+   enter @Mux,,Err9;Array$
+   exit if Err9 = 101007
+   print Array$
+   if pos(Array$,"PORT WIRING") then
+     loop
+       Array$ = ""
+       enter @Mux,,Err9;Array$
+       exit if Err9 = 101007
+
+     if pos(Array$,"Module ") and pos(Array$,"MUX ") then
+       if not Timing then
+       output @WL;"  timing " & lwc$(Array$[1;9])|Timing = 1
+       end if
+       Muxcard$ = ""|Muxcard$ = lwc$(Array$[pos(Array$,"MUX");6])
+       Side$ = ""|Side$ = lwc$(Array$[10;pos(Array$,"side")-10])
+     end if
+
+     if pos(Array$," Probe ") and pos(Array$," port ") and not pos(Array$," [") then
+     output @WL;"  device """ & Array$[pos(Array$,"Probe ")+6;pos(Array$,"to")-10] &"""; " & Side$ & Muxcard$ & Array$[pos(Array$,"port");len(Array$)]
+     output @WL;"    " & WL_F$(2)
+     output @WL;"  end device"
+     output @WL
+     end if
+
+     if pos(Array$," Probe ") and pos(Array$," port ") and pos(Array$," [") then
+     output @WL;"  device """ & Array$[pos(Array$,"Probe ")+6;pos(Array$," [")-10] &"""; " & Side$ & Muxcard$ & Array$[pos(Array$,"port");7]
+     output @WL;"    " & WL_F$(2)
+     output @WL;"  end device"
+     output @WL
+     end if
+
+     end loop
+   end if
+   end loop
+   output @WL;"end test"
+ assign @WL to *
+assign @Mux to *
+subend
+
